@@ -60,6 +60,10 @@ func main() {
 		}
 	}
 
+	var backupPVCLabels = map[string]string{
+		"scale.sealos.io/node": *nodeName,
+	}
+
 	for _, pvc := range targetPVCList {
 		if status, _ := pvcStatusMap.Load(pvc.Namespace + "/" + pvc.Name); status != "init, ready to go" {
 			continue
@@ -70,6 +74,7 @@ func main() {
 			ObjectMeta: ctrl.ObjectMeta{
 				Name:      pvc.Name + "-backup",
 				Namespace: pvc.Namespace,
+				Labels:    backupPVCLabels,
 			},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes:      pvc.Spec.AccessModes,
@@ -114,16 +119,19 @@ func main() {
 			continue
 		}
 		// scale down stateful set in pvc namespace
-		logger.Info("scaled down stateful set in pvc namespace")
+		logger.Info("scaling down stateful set in pvc namespace", "pvc", pvc.Name, "namespace", pvc.Namespace)
 		statefulSetList := &appsv1.StatefulSetList{}
 		if err = c.List(context.Background(), statefulSetList, &client.ListOptions{Namespace: pvc.Namespace}); err != nil {
-			logger.Error(err, "failed to list stateful set in pvc namespace")
+			logger.Error(err, "failed to list stateful set in pvc namespace", "pvc", pvc.Name, "namespace", pvc.Namespace)
 			pvcStatusMap.Store(pvc.Namespace+"/"+pvc.Name, "failed to list stateful set in pvc namespace")
 		}
 		failed := false
 		// scale down stateful set in pvc namespace
 		for _, sSet := range statefulSetList.Items {
-			originalReplicasMap[sSet.Namespace+"/"+sSet.Name] = *sSet.Spec.Replicas
+			// do not recover replicas if it is already scaled down
+			if _, ok := originalReplicasMap[sSet.Namespace+"/"+sSet.Name]; !ok {
+				originalReplicasMap[sSet.Namespace+"/"+sSet.Name] = *sSet.Spec.Replicas
+			}
 			if err := scaleStatefulSet(c, sSet.Namespace, sSet.Name, 0); err != nil {
 				logger.Error(err, "failed to scale down stateful set in pvc namespace", "statefulSet", sSet.Name, "namespace", sSet.Namespace)
 				failed = true
@@ -144,7 +152,7 @@ func main() {
 			if err = c.List(context.Background(), statefulSetList, &client.ListOptions{Namespace: pvc.Namespace}); err != nil {
 				logger.Error(err, "failed to list stateful set in pvc namespace")
 			}
-			logger.Info("scaled to original stateful set in pvc namespace")
+			logger.Info("scaling to original stateful set in pvc namespace", "pvc", pvc.Name, "namespace", pvc.Namespace)
 			for _, sSet := range statefulSetList.Items {
 				if err := scaleStatefulSet(c, sSet.Namespace, sSet.Name, originalReplicasMap[sSet.Namespace+"/"+sSet.Name]); err != nil {
 					logger.Error(err, "failed to scaled to original stateful set in pvc namespace")
@@ -159,7 +167,7 @@ func main() {
 			continue
 		}
 		// delete pvc
-		logger.Info("deleted original pvc", "pvc", pvc.Name, "namespace", pvc.Namespace)
+		logger.Info("deleting original pvc", "pvc", pvc.Name, "namespace", pvc.Namespace)
 		if err := c.Delete(context.Background(), &pvc); err != nil {
 			logger.Error(err, "failed to delete pvc", "pvc", pvc.Name, "namespace", pvc.Namespace)
 			pvcStatusMap.Store(pvc.Namespace+"/"+pvc.Name, "failed to delete pvc")
@@ -241,6 +249,8 @@ func main() {
 		}()
 	}
 	wg.Wait()
+
+	// TODO!!: delete backup pvc manually, get the backup pvc list from the labels: key: scale.sealos.io/node, value: nodeName
 
 	//for _, pvc := range targetPVCList {
 	//	// delete backup pvc
