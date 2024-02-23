@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hello-world
+  labels:
+    cloud.sealos.io/app-deploy-manager: hello-world
+    app: hello-world
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: hello-world
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 50%
+  minReadySeconds: 10
+  serviceName: hello-world
+  template:
+    metadata:
+      labels:
+        app: hello-world
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: hello-world
+          image: nginx
+          env: []
+          resources:
+            requests:
+              cpu: 10m
+              memory: 6Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          ports:
+            - containerPort: 80
+              name: dfzzrmbicwcd
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-data-2
+              mountPath: /data-2
+      volumes: []
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-data-2
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
