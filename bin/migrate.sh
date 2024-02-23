@@ -44,7 +44,7 @@ done
 set -- "${POSITIONAL[@]}" # restore positional params
 
 ./bin/pv-migrate migrate -i -s svc --log-level trace\
-  --helm-set rsync.extraArgs="--partial --inplace --whole-file --exclude='Pal-LinuxServer.pak'" \
+  --helm-set rsync.extraArgs="--partial --inplace --whole-file --exclude='Pal-LinuxServer.pak' --exclude='Pal/Binaries/Linux/*'" \
   --helm-set sshd.tolerations[0].key=scale.sealos.io/node \
   --helm-set sshd.tolerations[0].operator=Exists \
   --helm-set sshd.tolerations[0].effect=NoSchedule \

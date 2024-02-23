@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -35,6 +37,12 @@ func main() {
 		logger.Error(err, "failed to create client")
 		return
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	// find all pv in nodeName
 	pvList := &corev1.PersistentVolumeList{}
@@ -99,8 +107,9 @@ func main() {
 		wg.Add(1)
 		pvc2 := pvc
 		go func() {
+			defer wg.Done()
 			logger.Info("migrating data from target pvc to backup pvc", "pvc", pvc2.Name, "namespace", pvc2.Namespace)
-			err := migrateData(pvc2, &wg)
+			err := migrateData(ctx, pvc2)
 			if err != nil {
 				logger.Error(err, "failed to migrate data from target pvc to backup pvc", "pvc", pvc2.Name, "namespace", pvc2.Namespace)
 				pvcStatusMap.Store(pvc2.Namespace+"/"+pvc2.Name, "failed to migrate data from target pvc to backup pvc")
@@ -201,20 +210,27 @@ func main() {
 		}
 	}
 
+	// wait for stateful set to be scaled up and pvc to be bound
+	time.Sleep(60 * time.Second)
+
 	// wait for recreated pvc to be bound
 	for _, pvc := range targetPVCList {
 		if status, _ := pvcStatusMap.Load(pvc.Namespace + "/" + pvc.Name); status != "scaled up stateful set in pvc namespace" {
 			continue
 		}
 		// get recreated pvc
-		ipvc := &corev1.PersistentVolumeClaim{Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending}}
 		logger.Info("waiting for recreated pvc to be bound", "pvc", pvc.Name, "namespace", pvc.Namespace)
-		var pendingCount, errCount int
-		pendingCount = 0
-		errCount = 0
-		for ; errCount <= 10 && pendingCount <= 30 && ipvc.Status.Phase != corev1.ClaimBound; pendingCount++ {
+
+		ipvc := &corev1.PersistentVolumeClaim{Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending}}
+		for pendingCount, errCount := 0, 0; errCount <= 10 && pendingCount <= 30; {
 			if err = c.Get(context.Background(), client.ObjectKey{Namespace: pvc.Namespace, Name: pvc.Name}, ipvc); err != nil {
 				errCount++
+				logger.Error(err, "failed to get recreated pvc", "pvc", pvc.Name, "namespace", pvc.Namespace)
+			}
+			if ipvc.Status.Phase != corev1.ClaimBound {
+				pendingCount++
+			} else {
+				break
 			}
 			time.Sleep(5 * time.Second)
 		}
@@ -227,8 +243,6 @@ func main() {
 		}
 	}
 
-	time.Sleep(60 * time.Second)
-
 	for _, pvc := range targetPVCList {
 		// migrate data from backup pvc to recreated pvc.
 		if status, _ := pvcStatusMap.Load(pvc.Namespace + "/" + pvc.Name); status != "recreated pvc is bound" {
@@ -238,7 +252,8 @@ func main() {
 		pvc2 := pvc
 		go func() {
 			logger.Info("migrating data from backup pvc to recreated pvc", "pvc", pvc2.Name, "namespace", pvc2.Namespace)
-			err := recoverData(pvc2, &wg)
+			defer wg.Done()
+			err := recoverData(ctx, pvc2)
 			if err != nil {
 				logger.Error(err, "failed to migrate data from backup pvc to recreated pvc", "pvc", pvc2.Name, "namespace", pvc2.Namespace)
 				pvcStatusMap.Store(pvc2.Namespace+"/"+pvc2.Name, "failed to migrate data from backup pvc to recreated pvc")
@@ -248,7 +263,6 @@ func main() {
 			}
 		}()
 	}
-	wg.Wait()
 
 	// TODO!!: delete backup pvc manually, get the backup pvc list from the labels: key: scale.sealos.io/node, value: nodeName
 
@@ -266,6 +280,18 @@ func main() {
 	//	logger.Info("migrated pvc success", "pvc", pvc.Name, "namespace", pvc.Namespace)
 	//}
 	logger.Info("originalReplicasMap", "originalReplicasMap", originalReplicasMap)
+
+	go func() {
+		wg.Wait()
+		cancel()
+		logger.Info("all commands are done")
+	}()
+
+	select {
+	case <-sigCh:
+		cancel()
+	case <-ctx.Done():
+	}
 }
 
 func recordPVCStatus(p *sync.Map) {
@@ -281,28 +307,20 @@ func recordPVCStatus(p *sync.Map) {
 	})
 }
 
-func migrateData(pvc corev1.PersistentVolumeClaim, wg *sync.WaitGroup) error {
-	defer wg.Done()
-	cmd := exec.Command("./bin/migrate.sh", "-n", pvc.Namespace, "-i", pvc.Name, "-o", pvc.Name+"-backup")
+func migrateData(ctx context.Context, pvc corev1.PersistentVolumeClaim) error {
+	cmd := exec.CommandContext(ctx, "./bin/migrate.sh", "-n", pvc.Namespace, "-i", pvc.Name, "-o", pvc.Name+"-backup")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to migrate data from target pvc to backup pvc, %v, %s", err, output)
 	}
 	return nil
 }
 
-func recoverData(pvc corev1.PersistentVolumeClaim, wg *sync.WaitGroup) error {
-	defer wg.Done()
-	cmd := exec.Command("./bin/migrate.sh", "-n", pvc.Namespace, "-i", pvc.Name+"-backup", "-o", pvc.Name)
-	var erro error
-	for i := 0; i < 3; i++ {
-		if output, err := cmd.CombinedOutput(); err != nil {
-			erro = fmt.Errorf("failed to migrate data from target pvc to backup pvc, %v, %s", err, output)
-		} else {
-			erro = nil
-			break
-		}
+func recoverData(ctx context.Context, pvc corev1.PersistentVolumeClaim) error {
+	cmd := exec.CommandContext(ctx, "./bin/migrate.sh", "-n", pvc.Namespace, "-i", pvc.Name+"-backup", "-o", pvc.Name)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to migrate data from backup pvc to recreated pvc, %v, %s", err, output)
 	}
-	return erro
+	return nil
 }
 
 // checkPVInNode check if pv is in nodeName

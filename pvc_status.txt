@@ -1,6 +1,6 @@
 pvc: ns-bbb/vn-data-2-hello-world-0, status: migrated data from backup pvc to recreated pvc
-pvc: ns-bbb/vn-data-hello-world-0, status: migrated data from backup pvc to recreated pvc
-pvc: ns-ccc/vn-data-hello-world-0, status: migrated data from backup pvc to recreated pvc
 pvc: ns-aaa/vn-data-hello-world-0, status: migrated data from backup pvc to recreated pvc
 pvc: ns-ccc/vn-data-2-hello-world-0, status: migrated data from backup pvc to recreated pvc
+pvc: ns-bbb/vn-data-hello-world-0, status: migrated data from backup pvc to recreated pvc
 pvc: ns-aaa/vn-data-2-hello-world-0, status: migrated data from backup pvc to recreated pvc
+pvc: ns-ccc/vn-data-hello-world-0, status: migrated data from backup pvc to recreated pvc
